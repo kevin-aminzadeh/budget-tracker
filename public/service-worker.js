@@ -3,6 +3,7 @@ const FILES_TO_CACHE = [
   "/index.html",
   "dist/app.bundle.js",
   "https://cdn.jsdelivr.net/npm/chart.js@2.8.0",
+  "https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css",
   "assets/css/styles.css",
 ];
 
@@ -42,45 +43,41 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  // non GET requests are not cached and requests to other origins are not cached
-  if (
-    event.request.method !== "GET" ||
-    !event.request.url.startsWith(self.location.origin)
-  ) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
-
-  // handle runtime GET requests for data from /api routes
-  if (event.request.url.includes("/api/transaction")) {
-    // make network request and fallback to cache if network request fails (offline)
+  // Handle Runtime Requests For Data
+  if (event.request.url.includes("/api/")) {
     event.respondWith(
-      caches.open(RUNTIME_CACHE).then((cache) => {
-        return fetch(event.request)
-          .then((response) => {
-            cache.put(event.request, response.clone());
-            return response;
-          })
-          .catch(() => caches.match(event.request));
-      })
+      caches
+        .open(RUNTIME_CACHE)
+        .then((cache) => {
+          return fetch(event.request)
+            .then((response) => {
+              if (response.status === 200) {
+                cache.put(event.request.url, response.clone());
+              }
+
+              return response;
+            })
+            .catch((err) => {
+              // Network request failed, try to get it from the cache.
+              return cache.match(event.request);
+            });
+        })
+        .catch((err) => {
+          throw err;
+        })
     );
+
     return;
   }
 
-  // use cache first for all other requests for performance
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      // request is not in cache. make network request and cache the response
-      return caches.open(RUNTIME_CACHE).then((cache) => {
-        return fetch(event.request).then((response) => {
-          return cache.put(event.request, response.clone()).then(() => {
-            return response;
-          });
-        });
+    fetch(event.request).catch(function () {
+      return caches.match(event.request).then(function (response) {
+        if (response) {
+          return response;
+        } else if (event.request.headers.get("accept").includes("text/html")) {
+          return caches.match("/");
+        }
       });
     })
   );

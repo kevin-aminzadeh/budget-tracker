@@ -1,18 +1,29 @@
+import { useIndexedDb, checkForIndexedDb } from "./indexedDb";
+
 let transactions = [];
 let myChart;
 
 fetch("/api/transaction")
-  .then(response => {
+  .then((response) => {
     return response.json();
   })
-  .then(data => {
-    // save db data on global variable
+  .then((data) => {
     transactions = data;
-
     populateTotal();
     populateTable();
     populateChart();
   });
+
+function saveRecord(transaction) {
+  useIndexedDb("transactions", "TransactionStore", "post", transaction).then(
+    (results) => {
+      transactions = results;
+      populateTotal();
+      populateTable();
+      populateChart();
+    }
+  );
+}
 
 function populateTotal() {
   // reduce transaction amounts to a single total value
@@ -28,7 +39,7 @@ function populateTable() {
   let tbody = document.querySelector("#tbody");
   tbody.innerHTML = "";
 
-  transactions.forEach(transaction => {
+  transactions.forEach((transaction) => {
     // create and populate a table row
     let tr = document.createElement("tr");
     tr.innerHTML = `
@@ -46,13 +57,13 @@ function populateChart() {
   let sum = 0;
 
   // create date labels for chart
-  let labels = reversed.map(t => {
+  let labels = reversed.map((t) => {
     let date = new Date(t.date);
     return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
   });
 
   // create incremental values for chart
-  let data = reversed.map(t => {
+  let data = reversed.map((t) => {
     sum += parseInt(t.value);
     return sum;
   });
@@ -65,16 +76,18 @@ function populateChart() {
   let ctx = document.getElementById("myChart").getContext("2d");
 
   myChart = new Chart(ctx, {
-    type: 'line',
-      data: {
-        labels,
-        datasets: [{
-            label: "Total Over Time",
-            fill: true,
-            backgroundColor: "#6666ff",
-            data
-        }]
-    }
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Total Over Time",
+          fill: true,
+          backgroundColor: "#6666ff",
+          data,
+        },
+      ],
+    },
   });
 }
 
@@ -87,8 +100,7 @@ function sendTransaction(isAdding) {
   if (nameEl.value === "" || amountEl.value === "") {
     errorEl.textContent = "Missing Information";
     return;
-  }
-  else {
+  } else {
     errorEl.textContent = "";
   }
 
@@ -96,7 +108,7 @@ function sendTransaction(isAdding) {
   let transaction = {
     name: nameEl.value,
     value: amountEl.value,
-    date: new Date().toISOString()
+    date: new Date().toISOString(),
   };
 
   // if subtracting funds, convert amount to negative number
@@ -111,43 +123,117 @@ function sendTransaction(isAdding) {
   populateChart();
   populateTable();
   populateTotal();
-  
+
   // also send to server
   fetch("/api/transaction", {
     method: "POST",
     body: JSON.stringify(transaction),
     headers: {
       Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json"
-    }
+      "Content-Type": "application/json",
+    },
   })
-  .then(response => {    
-    return response.json();
-  })
-  .then(data => {
-    if (data.errors) {
-      errorEl.textContent = "Missing Information";
-    }
-    else {
+    .then((response) => {
+      return response.json();
+    })
+    .then((data) => {
+      if (data.errors) {
+        errorEl.textContent = "Missing Information";
+      } else {
+        // clear form
+        nameEl.value = "";
+        amountEl.value = "";
+      }
+    })
+    .catch((err) => {
+      // fetch failed, so save in indexed db
+      saveRecord(transaction);
+
       // clear form
       nameEl.value = "";
       amountEl.value = "";
-    }
-  })
-  .catch(err => {
-    // fetch failed, so save in indexed db
-    saveRecord(transaction);
+    });
+}
 
-    // clear form
-    nameEl.value = "";
-    amountEl.value = "";
+// Sync Data Between IndexedDB and API
+function syncData() {
+  // Get All Data from indexedDB
+  useIndexedDb("transactions", "TransactionStore", "get").then((results) => {
+    // If Local Data exists,
+    if (results.length) {
+      // Fetch DB Data
+      fetch("/api/transaction")
+        .then((response) => {
+          return response.json();
+        })
+        .then((data) => {
+          // Find Transactions that need to be synced
+          const offlineTransactions = results.filter((localTransaction) => {
+            return !data.some((item) => item._id === localTransaction._id);
+          });
+
+          const offlineTransactionData = offlineTransactions.map((item) => {
+            return { name: item.name, value: item.value, date: item.date };
+          });
+
+          // POST Offline Transactions To API
+          fetch("/api/transaction/bulk", {
+            method: "POST",
+            body: JSON.stringify(offlineTransactionData),
+            headers: {
+              Accept: "application/json, text/plain, */*",
+              "Content-Type": "application/json",
+            },
+          })
+            .then((response) => {
+              return response.json();
+            })
+            .then(() => {
+              // Fetch updated transactions list from API
+              fetch("/api/transaction")
+                .then((response) => {
+                  return response.json();
+                })
+                .then((newData) => {
+                  // Clear Stale Data From IndexedDB
+                  useIndexedDb("transactions", "TransactionStore", "deleteAll");
+
+                  // Push New Data To IndexedDB
+                  newData.forEach((item) =>
+                    useIndexedDb(
+                      "transactions",
+                      "TransactionStore",
+                      "post",
+                      item
+                    )
+                  );
+
+                  return newData;
+                })
+                .then((newData) => {
+                  console.log(newData);
+                  transactions = newData;
+                  populateTotal();
+                  populateTable();
+                  populateChart();
+                });
+            })
+            .catch((err) => {
+              console.log("ERROR!");
+              throw err;
+            });
+        });
+    }
   });
 }
 
-document.querySelector("#add-btn").onclick = function() {
+// Sync Local Stored Data With DB Once User is Online Again
+window.addEventListener("online", syncData);
+
+document.querySelector("#add-btn").onclick = function () {
   sendTransaction(true);
 };
 
-document.querySelector("#sub-btn").onclick = function() {
+document.querySelector("#sub-btn").onclick = function () {
   sendTransaction(false);
 };
