@@ -211,7 +211,6 @@ function syncData() {
                   return newData;
                 })
                 .then((newData) => {
-                  console.log(newData);
                   transactions = newData;
                   populateTotal();
                   populateTable();
